@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Time Series Dashboard</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        h3 {
+            text-align: center;
+            color: #333;
+        }
+        .chart-container {
+            margin-bottom: 15px; /* Reduced from 30px to 15px (50% less space) */
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+        }
+        .chart-title {
+            margin: 0 0 10px 0;
+            color: #444;
+            font-size: 14px;
+        }
+        .slider-container {
+            margin: 30px 0;
+            padding: 15px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+        .line {
+            fill: none;
+            stroke-width: 2;
+        }
+        .axis text {
+            font-size: 10px;
+        }
+        .axis path, .axis line {
+            stroke: #ccc;
+        }
+        .grid line {
+            stroke: #e0e0e0;
+            stroke-opacity: 0.7;
+        }
+        .file-input-container {
+            margin: 20px 0;
+            text-align: center;
+        }
+        #load-btn {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        #load-btn:hover {
+            background-color: #45a049;
+        }
+        .handle {
+            fill: #fff;
+            stroke: #000;
+            stroke-opacity: 0.5;
+            stroke-width: 1.25px;
+            cursor: grab;
+        }
+        .selected-range {
+            fill: #4682b4;
+            opacity: 0.3;
+        }
+        .loading {
+            text-align: center;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>A StraightForward Time Series Visualizer</h1>
+        <h3>Comma separated only</h1>
+        <h3>First column should be datetime in standard format: YYYY-MM-DD HH:MM:SS</h1>
+        
+        <div class="file-input-container">
+            <input type="file" id="csv-file" accept=".csv">
+            <button id="load-btn">Load CSV</button>
+        </div>
+        
+        <div id="loading" class="loading" style="display: none;">Loading and processing data...</div>
+        <div class="slider-container" id="slider-container"></div>
+        <div id="charts"></div>
+    </div>
+
+    <script>
+        // Main variables
+        let data = [];
+        let columns = [];
+        let charts = [];
+        let xScale, sliderScale;
+        let dateExtent = [];
+        
+        // Dimensions and margins
+        const margin = {top: 20, right: 60, bottom: 40, left: 60};
+        const width = 1100 - margin.left - margin.right;
+        const height = 225 - margin.top - margin.bottom; // Increased from 150 to 225 (50% taller)
+        
+        // Set up the file input
+        document.getElementById('load-btn').addEventListener('click', function() {
+            const fileInput = document.getElementById('csv-file');
+            if (fileInput.files.length > 0) {
+                const file = fileInput.files[0];
+                const reader = new FileReader();
+                
+                document.getElementById('loading').style.display = 'block';
+                
+                reader.onload = function(e) {
+                    const csvData = e.target.result;
+                    setTimeout(() => processData(csvData), 100); // Allow UI to update
+                };
+                
+                reader.readAsText(file);
+            }
+        });
+        
+        function processData(csvData) {
+            // Parse CSV data
+            data = d3.csvParse(csvData);
+            
+            // Get column names (excluding the first one which is the datetime)
+            columns = data.columns.slice(1);
+            
+            // Parse datetime
+            const parseDate = d3.timeParse("%Y-%m-%d %H:%M:%S");
+            data.forEach(d => {
+                d.datetime = parseDate(d[data.columns[0]]);
+                columns.forEach(col => {
+                    d[col] = +d[col]; // Convert to number
+                });
+            });
+            
+            // Sort data by datetime
+            data.sort((a, b) => a.datetime - b.datetime);
+            
+            // Get the extent of dates for the slider
+            dateExtent = d3.extent(data, d => d.datetime);
+            
+            // Create slider
+            createSlider(dateExtent);
+            
+            // Create charts
+            createCharts();
+            
+            document.getElementById('loading').style.display = 'none';
+        }
+        
+        function createSlider(dateExtent) {
+            // Clear previous slider if any
+            d3.select('#slider-container').html('');
+            
+            const sliderHeight = 80;
+            const sliderSvg = d3.select('#slider-container')
+                .append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', sliderHeight)
+                .append('g')
+                .attr('transform', `translate(${margin.left},10)`);
+            
+            // Time scale for slider
+            sliderScale = d3.scaleTime()
+                .domain(dateExtent)
+                .range([0, width])
+                .clamp(true);
+            
+            // Initial slider values - start with full range
+            let sliderValues = [dateExtent[0], dateExtent[1]];
+            
+            // Create the slider with two handles
+            const slider = sliderSvg.append('g')
+                .attr('class', 'slider')
+                .attr('transform', 'translate(0,10)');
+            
+            slider.append('line')
+                .attr('class', 'track')
+                .attr('x1', sliderScale.range()[0])
+                .attr('x2', sliderScale.range()[1])
+                .attr('stroke', '#ccc')
+                .attr('stroke-width', 6)
+                .attr('stroke-linecap', 'round');
+            
+            // Selected range rectangle
+            const selectedRange = slider.append('rect')
+                .attr('class', 'selected-range')
+                .attr('x', sliderScale(sliderValues[0]))
+                .attr('y', -10)
+                .attr('width', sliderScale(sliderValues[1]) - sliderScale(sliderValues[0]))
+                .attr('height', 20);
+            
+            // Custom tick format function for the slider
+            const customTickFormat = function(d) {
+                const format = d3.timeFormat('%b %d, %H:%M');
+                return format(d);
+            };
+            
+            slider.append('g')
+                .attr('transform', `translate(0,25)`)
+                .call(d3.axisBottom(sliderScale)
+                    .tickFormat(customTickFormat)
+                    .ticks(10)
+                    .tickSize(5));
+            
+            // Left handle
+            const leftHandle = slider.append('circle')
+                .attr('class', 'handle')
+                .attr('r', 8)
+                .attr('cx', sliderScale(sliderValues[0]));
+            
+            // Right handle
+            const rightHandle = slider.append('circle')
+                .attr('class', 'handle')
+                .attr('r', 8)
+                .attr('cx', sliderScale(sliderValues[1]));
+            
+            // Left handle behavior
+            leftHandle.call(d3.drag()
+                .on('start', function() {
+                    d3.select(this).raise().attr('stroke', '#4682b4');
+                })
+                .on('drag', function(event) {
+                    const cx = Math.max(sliderScale.range()[0], Math.min(sliderScale(sliderValues[1]), event.x));
+                    d3.select(this).attr('cx', cx);
+                    sliderValues[0] = sliderScale.invert(cx);
+                    selectedRange
+                        .attr('x', cx)
+                        .attr('width', sliderScale(sliderValues[1]) - cx);
+                })
+                .on('end', function() {
+                    d3.select(this).attr('stroke', null);
+                    updateCharts(sliderValues);
+                })
+            );
+            
+            // Right handle behavior
+            rightHandle.call(d3.drag()
+                .on('start', function() {
+                    d3.select(this).raise().attr('stroke', '#4682b4');
+                })
+                .on('drag', function(event) {
+                    const cx = Math.max(sliderScale(sliderValues[0]), Math.min(sliderScale.range()[1], event.x));
+                    d3.select(this).attr('cx', cx);
+                    sliderValues[1] = sliderScale.invert(cx);
+                    selectedRange
+                        .attr('width', cx - sliderScale(sliderValues[0]));
+                })
+                .on('end', function() {
+                    d3.select(this).attr('stroke', null);
+                    updateCharts(sliderValues);
+                })
+            );
+        }
+        
+        function createCharts() {
+            // Clear previous charts
+            d3.select('#charts').html('');
+            charts = [];
+            
+            // Create a chart for each data column
+            columns.forEach((column, i) => {
+                createChart(column, i);
+            });
+            
+            // Initial update with full date range
+            updateCharts([dateExtent[0], dateExtent[1]]);
+        }
+        
+        function createChart(column, index) {
+            const chartContainer = d3.select('#charts')
+                .append('div')
+                .attr('class', 'chart-container')
+                .attr('id', `chart-${index}`);
+            
+            chartContainer.append('h3')
+                .attr('class', 'chart-title')
+                .text(column);
+            
+            const svg = chartContainer.append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom)
+                .append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+            
+            // Create X scale
+            xScale = d3.scaleTime()
+                .domain(dateExtent)
+                .range([0, width]);
+            
+            // Create Y scale
+            const yExtent = d3.extent(data, d => d[column]);
+            const yScale = d3.scaleLinear()
+                .domain([0, yExtent[1] * 1.1 || 0.1]) // Start from 0 and add 10% padding
+                .range([height, 0]);
+            
+            // Custom tick format function for X axis
+            const customTimeFormat = function(d) {
+                const hours = d.getHours();
+                const minutes = d.getMinutes();
+                
+                // If it's midnight (00:00), show date on the second line
+                if (hours === 0 && minutes === 0) {
+                    return `00:00\n${d3.timeFormat('%m/%d')(d)}`;
+                } else {
+                    return d3.timeFormat('%H:%M')(d);
+                }
+            };
+            
+            // Add X axis
+            const xAxis = svg.append('g')
+                .attr('class', 'x axis')
+                .attr('transform', `translate(0,${height})`)
+                .call(d3.axisBottom(xScale)
+                    .tickFormat(customTimeFormat)
+                    .ticks(10));
+            
+            // Add Y axis
+            const yAxis = svg.append('g')
+                .attr('class', 'y axis')
+                .call(d3.axisLeft(yScale));
+            
+            // Add horizontal grid lines
+            svg.append('g')
+                .attr('class', 'grid')
+                .call(d3.axisLeft(yScale)
+                    .tickSize(-width)
+                    .tickFormat(''));
+            
+            // Create line generator
+            const line = d3.line()
+                .x(d => xScale(d.datetime))
+                .y(d => yScale(d[column]))
+                .curve(d3.curveMonotoneX); // Smooth curve
+            
+            // Add the line path
+            const path = svg.append('path')
+                .datum(data)
+                .attr('class', 'line')
+                .attr('d', line)
+                .attr('stroke', d3.schemeCategory10[index % 10]); // Cycle through colors
+            
+            // Store chart components for later updates
+            charts.push({
+                container: chartContainer,
+                svg: svg,
+                xAxis: xAxis,
+                yAxis: yAxis,
+                line: line,
+                path: path,
+                column: column,
+                yScale: yScale
+            });
+        }
+        
+        function updateCharts(dateRange) {
+            // Filter data based on selected date range
+            const filteredData = data.filter(d => 
+                d.datetime >= dateRange[0] && d.datetime <= dateRange[1]
+            );
+            
+            // Update X scale domain
+            xScale.domain(dateRange);
+            
+            // Custom tick format function for X axis
+            const customTimeFormat = function(d) {
+                const hours = d.getHours();
+                const minutes = d.getMinutes();
+                
+                // If it's midnight (00:00), show date on the second line
+                if (hours === 0 && minutes === 0) {
+                    return `00:00\n${d3.timeFormat('%m/%d')(d)}`;
+                } else {
+                    return d3.timeFormat('%H:%M')(d);
+                }
+            };
+            
+            // Update each chart
+            charts.forEach(chart => {
+                // Update Y scale domain based on filtered data
+                const yExtent = d3.extent(filteredData, d => d[chart.column]);
+                chart.yScale.domain([0, yExtent[1] * 1.1 || 0.1]); // Handle cases where all values might be 0
+                
+                // Update X axis
+                chart.xAxis.call(d3.axisBottom(xScale)
+                    .tickFormat(customTimeFormat)
+                    .ticks(10));
+                
+                // Update Y axis
+                chart.yAxis.call(d3.axisLeft(chart.yScale));
+                
+                // Update line
+                chart.path.datum(filteredData)
+                    .attr('d', chart.line);
+            });
+        }
+    </script>
+</body>
+</html>
